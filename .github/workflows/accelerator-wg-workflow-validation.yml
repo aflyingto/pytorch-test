@@ -17,8 +17,11 @@ permissions:
   contents: read
 
 jobs:
-  validate-accelerator-wg-workflows:
+  discover-accelerator-wg-workflows:
     runs-on: ubuntu-latest
+    outputs:
+      workflow_matrix: ${{ steps.enumerate.outputs.workflow_matrix }}
+      workflow_count: ${{ steps.enumerate.outputs.workflow_count }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -45,46 +48,61 @@ jobs:
             exit 1
           fi
 
+          matrix_json=$(jq -R -s -c 'split("\n") | map(select(length > 0))' workflow-files.txt)
+          echo "workflow_matrix=$matrix_json" >> "$GITHUB_OUTPUT"
           echo "workflow_count=$(wc -l < workflow-files.txt | tr -d ' ')" >> "$GITHUB_OUTPUT"
-
-      - name: Validate trigger/runner/action pinning basics
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          missing_on=0
-          missing_runner=0
-          unpinned_action=0
-
-          while IFS= read -r wf; do
-            echo "Checking: $wf"
-
-            if ! grep -Eq '^on:' "$wf"; then
-              echo "[ERROR] Missing top-level 'on:' in $wf"
-              missing_on=1
-            fi
-
-            if ! grep -Eq '^[[:space:]]*runs-on:' "$wf"; then
-              echo "[ERROR] Missing 'runs-on:' in $wf"
-              missing_runner=1
-            fi
-
-            # Consider action refs unpinned if they use moving refs like main/master/HEAD.
-            if grep -En '^[[:space:]]*uses:[[:space:]]*[^@]+@(main|master|HEAD)$' "$wf"; then
-              echo "[ERROR] Found unpinned action ref (main/master/HEAD) in $wf"
-              unpinned_action=1
-            fi
-          done < workflow-files.txt
-
-          if [[ "$missing_on" -ne 0 || "$missing_runner" -ne 0 || "$unpinned_action" -ne 0 ]]; then
-            echo "Validation failed"
-            exit 1
-          fi
-
-          echo "Validation passed for $(wc -l < workflow-files.txt) workflow files"
 
       - name: Upload workflow inventory artifact
         uses: actions/upload-artifact@v4
         with:
           name: accelerator-wg-workflow-files
           path: workflow-files.txt
+
+  run-accelerator-wg-workflows:
+    runs-on: ubuntu-latest
+    needs: discover-accelerator-wg-workflows
+    strategy:
+      fail-fast: false
+      matrix:
+        workflow: ${{ fromJson(needs.discover-accelerator-wg-workflows.outputs.workflow_matrix) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Link accelerator-integration-wg submodule
+        run: ./scripts/link_accelerator_submodule.sh
+
+      - name: Install act
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sSL https://raw.githubusercontent.com/nektos/act/master/install.sh | sudo bash -s -- -b /usr/local/bin
+          act --version
+
+      - name: Execute upstream workflow via act
+        shell: bash
+        run: |
+          set -euo pipefail
+          wf="${{ matrix.workflow }}"
+          echo "Running workflow: $wf"
+
+          trigger_event=$(ruby -ryaml -e '
+            on_cfg = YAML.load_file(ARGV[0])["on"]
+            keys = case on_cfg
+                   when String then [on_cfg]
+                   when Array then on_cfg
+                   when Hash then on_cfg.keys
+                   else []
+                   end.map(&:to_s)
+            preferred = %w[workflow_dispatch push pull_request schedule]
+            event = preferred.find { |e| keys.include?(e) }
+            puts(event.to_s)
+          ' "$wf")
+
+          if [[ -z "$trigger_event" ]]; then
+            echo "No runnable trigger found in $wf (expected one of workflow_dispatch/push/pull_request/schedule)" >&2
+            exit 1
+          fi
+
+          echo "Selected trigger event: $trigger_event"
+          act "$trigger_event" --workflows "$wf" --container-architecture linux/amd64 --pull=false
