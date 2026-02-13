@@ -1,4 +1,4 @@
-name: AI Code Detection
+name: Free Code Detection
 
 on:
   pull_request:
@@ -7,29 +7,24 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
+  security-events: write
 
 jobs:
-  ai-code-review:
-    name: AI code detection on PR changes
+  codeql-analysis:
+    name: Free code detection (CodeQL)
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Run AI review
-        uses: anc95/ChatGPT-CodeReview@v1.0.18
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
         with:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_API_ENDPOINT: https://api.openai.com/v1
-          MODEL: gpt-4o-mini
-          LANGUAGE: Chinese
-          PROMPT: |
-            你是严格的代码检测助手，请重点检查：
-            1) 安全风险（密钥泄漏、命令注入、路径遍历等）；
-            2) 逻辑缺陷与边界条件；
-            3) 性能与资源浪费；
-            4) 可维护性问题（命名、重复、可读性）。
-            输出请包含：问题级别、定位、原因、修复建议。
+          languages: python
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
