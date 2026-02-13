@@ -84,7 +84,9 @@ jobs:
             doc = YAML.load_file(path)
             raise("workflow must be a mapping: #{path}") unless doc.is_a?(Hash)
 
-            on_cfg = doc["on"]
+            # NOTE: Ruby/Psych may parse unquoted YAML key `on` as boolean true (YAML 1.1 behavior).
+            # GitHub Actions uses YAML 1.2 semantics, so we defensively read both "on" and true keys.
+            on_cfg = doc["on"] || doc[:on] || doc[true]
             triggers = case on_cfg
                        when String then [on_cfg]
                        when Array then on_cfg
