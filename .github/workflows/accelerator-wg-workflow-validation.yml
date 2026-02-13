@@ -93,8 +93,9 @@ jobs:
                        when Hash then on_cfg.keys
                        else []
                        end.map(&:to_s)
-            allowed = %w[workflow_dispatch push pull_request schedule workflow_call]
-            raise("missing supported trigger in #{path}") if (triggers & allowed).empty?
+            # Do not hard-code trigger names: upstream workflows may use workflow_run,
+            # repository_dispatch, release, etc. We only require non-empty trigger config.
+            raise("missing trigger in #{path}") if triggers.empty?
 
             jobs = doc["jobs"]
             raise("missing jobs in #{path}") unless jobs.is_a?(Hash) && !jobs.empty?
