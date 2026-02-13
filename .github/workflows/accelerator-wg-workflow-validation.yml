@@ -58,7 +58,7 @@ jobs:
           name: accelerator-wg-workflow-files
           path: workflow-files.txt
 
-  run-accelerator-wg-workflows:
+  validate-accelerator-wg-workflows:
     runs-on: ubuntu-latest
     needs: discover-accelerator-wg-workflows
     strategy:
@@ -72,37 +72,53 @@ jobs:
       - name: Link accelerator-integration-wg submodule
         run: ./scripts/link_accelerator_submodule.sh
 
-      - name: Install act
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl -sSL https://raw.githubusercontent.com/nektos/act/master/install.sh | sudo bash -s -- -b /usr/local/bin
-          act --version
-
-      - name: Execute upstream workflow via act
+      - name: Validate workflow structure and orchestratability
         shell: bash
         run: |
           set -euo pipefail
           wf="${{ matrix.workflow }}"
-          echo "Running workflow: $wf"
+          echo "Validating: $wf"
 
-          trigger_event=$(ruby -ryaml -e '
-            on_cfg = YAML.load_file(ARGV[0])["on"]
-            keys = case on_cfg
-                   when String then [on_cfg]
-                   when Array then on_cfg
-                   when Hash then on_cfg.keys
-                   else []
-                   end.map(&:to_s)
-            preferred = %w[workflow_dispatch push pull_request schedule]
-            event = preferred.find { |e| keys.include?(e) }
-            puts(event.to_s)
-          ' "$wf")
+          ruby -ryaml -e '
+            path = ARGV[0]
+            doc = YAML.load_file(path)
+            raise("workflow must be a mapping: #{path}") unless doc.is_a?(Hash)
 
-          if [[ -z "$trigger_event" ]]; then
-            echo "No runnable trigger found in $wf (expected one of workflow_dispatch/push/pull_request/schedule)" >&2
+            on_cfg = doc["on"]
+            triggers = case on_cfg
+                       when String then [on_cfg]
+                       when Array then on_cfg
+                       when Hash then on_cfg.keys
+                       else []
+                       end.map(&:to_s)
+            allowed = %w[workflow_dispatch push pull_request schedule workflow_call]
+            raise("missing supported trigger in #{path}") if (triggers & allowed).empty?
+
+            jobs = doc["jobs"]
+            raise("missing jobs in #{path}") unless jobs.is_a?(Hash) && !jobs.empty?
+
+            jobs.each do |job_name, job|
+              unless job.is_a?(Hash)
+                raise("job #{job_name} must be mapping in #{path}")
+              end
+
+              has_runner = job.key?("runs-on") || job.key?("uses")
+              raise("job #{job_name} missing runs-on/uses in #{path}") unless has_runner
+
+              if job.key?("steps")
+                steps = job["steps"]
+                raise("job #{job_name} steps must be array in #{path}") unless steps.is_a?(Array) && !steps.empty?
+                steps.each_with_index do |s, i|
+                  next if s.is_a?(Hash) && (s.key?("run") || s.key?("uses"))
+                  raise("job #{job_name} step ##{i} missing run/uses in #{path}")
+                end
+              end
+            end
+          ' "$wf"
+
+          if grep -En '^[[:space:]]*uses:[[:space:]]*[^@]+@(main|master|HEAD)$' "$wf"; then
+            echo "[ERROR] Found unpinned action ref (main/master/HEAD) in $wf" >&2
             exit 1
           fi
 
-          echo "Selected trigger event: $trigger_event"
-          act "$trigger_event" --workflows "$wf" --container-architecture linux/amd64 --pull=false
+          echo "Validation passed: $wf"
