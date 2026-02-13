@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   codeql-analysis:
-    name: Free code detection (CodeQL)
+    name: Free code detection (CodeQL for GitHub Actions)
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
@@ -21,10 +21,7 @@ jobs:
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
-          languages: python
-
-      - name: Autobuild
-        uses: github/codeql-action/autobuild@v3
+          languages: actions
 
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@v3
