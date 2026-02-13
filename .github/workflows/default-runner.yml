@@ -1,0 +1,30 @@
+name: Default GitHub Runner Check
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  run-with-default-resources:
+    name: Run on free default GitHub-hosted runner
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show environment
+        run: |
+          echo "Using GitHub-hosted default runner (ubuntu-latest)."
+          echo "No NPU resources are requested or required."
+          uname -a
+          lscpu | head -n 20
+
+      - name: Python smoke test
+        run: |
+          python3 --version
+          python3 - <<'PY'
+          print('Smoke test succeeded on default GitHub runner.')
+          PY
