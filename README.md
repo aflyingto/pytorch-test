@@ -14,3 +14,9 @@ This repository is configured to run CI on GitHub's free default hosted runner (
   - uses GitHub official `github/codeql-action` to scan GitHub Actions workflows in this repository
   - configured with `languages: actions` (suitable for this repo, which currently has no Python source tree)
   - no external API key is required
+
+## accelerator-integration-wg submodule
+
+- Target repo: `https://github.com/pytorch-fdn/accelerator-integration-wg.git`
+- One-command linker (run in a network-enabled environment): `./scripts/link_accelerator_submodule.sh`
+- Workflow validation record: `docs/accelerator_wg_workflow_validation.md`
