@@ -1,0 +1,90 @@
+name: accelerator-wg-workflow-validation
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/accelerator-wg-workflow-validation.yml'
+      - 'scripts/link_accelerator_submodule.sh'
+      - 'docs/accelerator_wg_workflow_validation.md'
+  pull_request:
+    paths:
+      - '.github/workflows/accelerator-wg-workflow-validation.yml'
+      - 'scripts/link_accelerator_submodule.sh'
+      - 'docs/accelerator_wg_workflow_validation.md'
+
+permissions:
+  contents: read
+
+jobs:
+  validate-accelerator-wg-workflows:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Link accelerator-integration-wg submodule
+        run: ./scripts/link_accelerator_submodule.sh
+
+      - name: Enumerate upstream workflow files
+        id: enumerate
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORKFLOW_DIR="third_party/accelerator-integration-wg/.github/workflows"
+
+          if [[ ! -d "$WORKFLOW_DIR" ]]; then
+            echo "Workflow directory does not exist: $WORKFLOW_DIR" >&2
+            exit 1
+          fi
+
+          find "$WORKFLOW_DIR" -type f \( -name '*.yml' -o -name '*.yaml' \) | sort | tee workflow-files.txt
+
+          if [[ ! -s workflow-files.txt ]]; then
+            echo "No workflow files found under $WORKFLOW_DIR" >&2
+            exit 1
+          fi
+
+          echo "workflow_count=$(wc -l < workflow-files.txt | tr -d ' ')" >> "$GITHUB_OUTPUT"
+
+      - name: Validate trigger/runner/action pinning basics
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          missing_on=0
+          missing_runner=0
+          unpinned_action=0
+
+          while IFS= read -r wf; do
+            echo "Checking: $wf"
+
+            if ! grep -Eq '^on:' "$wf"; then
+              echo "[ERROR] Missing top-level 'on:' in $wf"
+              missing_on=1
+            fi
+
+            if ! grep -Eq '^[[:space:]]*runs-on:' "$wf"; then
+              echo "[ERROR] Missing 'runs-on:' in $wf"
+              missing_runner=1
+            fi
+
+            # Consider action refs unpinned if they use moving refs like main/master/HEAD.
+            if grep -En '^[[:space:]]*uses:[[:space:]]*[^@]+@(main|master|HEAD)$' "$wf"; then
+              echo "[ERROR] Found unpinned action ref (main/master/HEAD) in $wf"
+              unpinned_action=1
+            fi
+          done < workflow-files.txt
+
+          if [[ "$missing_on" -ne 0 || "$missing_runner" -ne 0 || "$unpinned_action" -ne 0 ]]; then
+            echo "Validation failed"
+            exit 1
+          fi
+
+          echo "Validation passed for $(wc -l < workflow-files.txt) workflow files"
+
+      - name: Upload workflow inventory artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: accelerator-wg-workflow-files
+          path: workflow-files.txt
