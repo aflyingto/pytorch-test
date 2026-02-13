@@ -1,0 +1,127 @@
+name: accelerator-wg-workflow-validation
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/accelerator-wg-workflow-validation.yml'
+      - 'scripts/link_accelerator_submodule.sh'
+      - 'docs/accelerator_wg_workflow_validation.md'
+  pull_request:
+    paths:
+      - '.github/workflows/accelerator-wg-workflow-validation.yml'
+      - 'scripts/link_accelerator_submodule.sh'
+      - 'docs/accelerator_wg_workflow_validation.md'
+
+permissions:
+  contents: read
+
+jobs:
+  discover-accelerator-wg-workflows:
+    runs-on: ubuntu-latest
+    outputs:
+      workflow_matrix: ${{ steps.enumerate.outputs.workflow_matrix }}
+      workflow_count: ${{ steps.enumerate.outputs.workflow_count }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Link accelerator-integration-wg submodule
+        run: ./scripts/link_accelerator_submodule.sh
+
+      - name: Enumerate upstream workflow files
+        id: enumerate
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORKFLOW_DIR="third_party/accelerator-integration-wg/.github/workflows"
+
+          if [[ ! -d "$WORKFLOW_DIR" ]]; then
+            echo "Workflow directory does not exist: $WORKFLOW_DIR" >&2
+            exit 1
+          fi
+
+          find "$WORKFLOW_DIR" -type f \( -name '*.yml' -o -name '*.yaml' \) | sort | tee workflow-files.txt
+
+          if [[ ! -s workflow-files.txt ]]; then
+            echo "No workflow files found under $WORKFLOW_DIR" >&2
+            exit 1
+          fi
+
+          matrix_json=$(jq -R -s -c 'split("\n") | map(select(length > 0))' workflow-files.txt)
+          echo "workflow_matrix=$matrix_json" >> "$GITHUB_OUTPUT"
+          echo "workflow_count=$(wc -l < workflow-files.txt | tr -d ' ')" >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow inventory artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: accelerator-wg-workflow-files
+          path: workflow-files.txt
+
+  validate-accelerator-wg-workflows:
+    runs-on: ubuntu-latest
+    needs: discover-accelerator-wg-workflows
+    strategy:
+      fail-fast: false
+      matrix:
+        workflow: ${{ fromJson(needs.discover-accelerator-wg-workflows.outputs.workflow_matrix) }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Link accelerator-integration-wg submodule
+        run: ./scripts/link_accelerator_submodule.sh
+
+      - name: Validate workflow structure and orchestratability
+        shell: bash
+        run: |
+          set -euo pipefail
+          wf="${{ matrix.workflow }}"
+          echo "Validating: $wf"
+
+          ruby -ryaml -e '
+            path = ARGV[0]
+            doc = YAML.load_file(path)
+            raise("workflow must be a mapping: #{path}") unless doc.is_a?(Hash)
+
+            # NOTE: Ruby/Psych may parse unquoted YAML key `on` as boolean true (YAML 1.1 behavior).
+            # GitHub Actions uses YAML 1.2 semantics, so we defensively read both "on" and true keys.
+            on_cfg = doc["on"] || doc[:on] || doc[true]
+            triggers = case on_cfg
+                       when String then [on_cfg]
+                       when Array then on_cfg
+                       when Hash then on_cfg.keys
+                       else []
+                       end.map(&:to_s)
+            # Do not hard-code trigger names: upstream workflows may use workflow_run,
+            # repository_dispatch, release, etc. We only require non-empty trigger config.
+            raise("missing trigger in #{path}") if triggers.empty?
+
+            jobs = doc["jobs"]
+            raise("missing jobs in #{path}") unless jobs.is_a?(Hash) && !jobs.empty?
+
+            jobs.each do |job_name, job|
+              unless job.is_a?(Hash)
+                raise("job #{job_name} must be mapping in #{path}")
+              end
+
+              has_runner = job.key?("runs-on") || job.key?("uses")
+              raise("job #{job_name} missing runs-on/uses in #{path}") unless has_runner
+
+              if job.key?("steps")
+                steps = job["steps"]
+                raise("job #{job_name} steps must be array in #{path}") unless steps.is_a?(Array) && !steps.empty?
+                steps.each_with_index do |s, i|
+                  next if s.is_a?(Hash) && (s.key?("run") || s.key?("uses"))
+                  raise("job #{job_name} step ##{i} missing run/uses in #{path}")
+                end
+              end
+            end
+          ' "$wf"
+
+          if grep -En '^[[:space:]]*uses:[[:space:]]*[^@]+@(main|master|HEAD)$' "$wf"; then
+            echo "[ERROR] Found unpinned action ref (main/master/HEAD) in $wf" >&2
+            exit 1
+          fi
+
+          echo "Validation passed: $wf"
