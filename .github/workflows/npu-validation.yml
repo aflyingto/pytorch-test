@@ -1,0 +1,29 @@
+name: npu-validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main", "master", "work"]
+  pull_request:
+
+jobs:
+  npu-build-and-validate:
+    # 需要自托管 Ascend NPU 机器，runner labels 可按实际调整
+    runs-on: [self-hosted, linux, npu, ascend]
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build NPU environment
+        shell: bash
+        run: |
+          bash scripts/build_npu_env.sh
+
+      - name: Validate NPU stack
+        shell: bash
+        run: |
+          source "$(conda info --base)/etc/profile.d/conda.sh"
+          conda activate "${NPU_CONDA_ENV:-npu-ci}"
+          RUN_DIST_TEST=1 bash scripts/validate_npu.sh
